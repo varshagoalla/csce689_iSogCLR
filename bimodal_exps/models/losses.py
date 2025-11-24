@@ -57,6 +57,63 @@ class CLIP_Loss(nn.Module):
             total_loss = (F.cross_entropy(sim, labels) + F.cross_entropy(sim.t(), labels)) / 2
 
         return total_loss
+    
+class SigLIPLoss(nn.Module):
+    """
+    SigLIP Loss from "Sigmoid Loss for Language Image Pre-training"
+    Paper: https://arxiv.org/abs/2303.15343
+    """
+    def __init__(self, temperature=0.01, learnable_temp=False, 
+                 bias=-10.0, learnable_bias=False):
+        super().__init__()
+        
+        if learnable_temp:
+            self.temperature = nn.Parameter(torch.tensor(temperature))
+        else:
+            self.register_buffer('temperature', torch.tensor(temperature))
+        
+        if learnable_bias:
+            self.bias = nn.Parameter(torch.tensor(bias))
+        else:
+            self.register_buffer('bias', torch.tensor(bias))
+    
+    def forward(self, image_features, text_features, logit_scale=None):
+        """
+        Args:
+            image_features: [batch_size, dim]
+            text_features: [batch_size, dim]
+            logit_scale: Optional pre-computed scale (ignored if using temp)
+        """
+        batch_size = image_features.shape[0]
+        device = image_features.device
+        
+        # Normalize
+        image_features = F.normalize(image_features, dim=-1)
+        text_features = F.normalize(text_features, dim=-1)
+        
+        # Compute similarity matrix
+        logits = (image_features @ text_features.T) / self.temperature + self.bias
+        
+        # Create positive pair labels (diagonal = 1, others = 0)
+        labels = torch.eye(batch_size, device=device)
+        
+        # Compute sigmoid loss for both directions
+        # Image-to-Text
+        loss_i2t = -torch.mean(
+            labels * F.logsigmoid(logits) + 
+            (1 - labels) * F.logsigmoid(-logits)
+        )
+        
+        # Text-to-Image  
+        loss_t2i = -torch.mean(
+            labels.T * F.logsigmoid(logits.T) + 
+            (1 - labels.T) * F.logsigmoid(-logits.T)
+        )
+        
+        # Average both directions
+        loss = (loss_i2t + loss_t2i) / 2
+        
+        return loss
 
 
 
