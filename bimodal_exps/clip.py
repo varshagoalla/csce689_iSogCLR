@@ -124,6 +124,20 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             metric_logger.update(b_T=0.0)
             metric_logger.update(v=0.0)
             metric_logger.update(lamda=info_dict['lamda'])
+        elif args.ita_type == 'siglip_cyclip':
+            metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
+            metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
+            metric_logger.update(cur_eta=0.0)
+            metric_logger.update(grad_tau_image=0.0)
+            metric_logger.update(grad_tau_text=0.0)
+            metric_logger.update(weights_image_pos=0.0)
+            metric_logger.update(weights_text_pos=0.0)
+            metric_logger.update(b_I=0.0)
+            metric_logger.update(b_T=0.0)
+            metric_logger.update(v=0.0)
+            metric_logger.update(lamda=0.0)
+            metric_logger.update(siglip_loss=info_dict['siglip_loss'])
+            metric_logger.update(cycle_loss=info_dict['cycle_loss'])
         else:
             metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
             metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
@@ -436,7 +450,7 @@ def main(args):
                   world_size=args.world_size, ita_type=args.ita_type, sogclr_gamma=args.sogclr_gamma, rho_I=args.rho_I, rho_T=args.rho_T, tau_init=args.tau_init,
                   eta_init=args.eta_init, beta_u=args.beta_u, temp=args.temp, learnable_temp=args.learnable_temp,
                   vicreg_sim_coeff=args.vicreg_sim_coeff, vicreg_std_coeff=args.vicreg_std_coeff, personalized_tau=args.personalized_tau, 
-                  use_temp_net=args.isogclr_temp_net, alpha=args.alpha, distributed=args.distributed)
+                  use_temp_net=args.isogclr_temp_net, alpha=args.alpha, distributed=args.distributed, cylambda_1=args.cylambda_1, cylambda_2=args.cylambda_2,)
     model = model.to(device)
 
     if args.evaluate or args.ita_type == 'isogclr_denoise':
@@ -635,6 +649,7 @@ if __name__ == '__main__':
     parser.add_argument('--warmup_epochs', default=5, type=int)
     parser.add_argument('--cooldown_epochs', default=0, type=int)
 
+
     # training & test settings
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--init_model', action='store_true')
@@ -655,7 +670,7 @@ if __name__ == '__main__':
 
     # loss config
     parser.add_argument('--ita_type', required=True, choices=['clip', 'cyclip', 'vicreg', 'sogclr', 'sogclr_dro', 
-                        'isogclr_new_v2', 'isogclr_new_v1', 'isogclr_new', 'onlineclr', 'siglip'])
+                        'isogclr_new_v2', 'isogclr_new_v1', 'isogclr_new', 'onlineclr', 'siglip', 'cyclip_sogclr', 'siglip_cyclip'])
     parser.add_argument('--vicreg_sim_coeff', default=25.0, type=float)
     parser.add_argument('--vicreg_std_coeff', default=25.0, type=float)
     parser.add_argument('--sogclr_gamma', default=0.8, type=float)
@@ -684,6 +699,12 @@ if __name__ == '__main__':
     # zero-shot transfer
     parser.add_argument('--zs_dataset', default="", choices=['cifar10', 'cifar100', 'imagenet'])
     parser.add_argument('--zs_datafolder', default='./datasets', type=str)
+
+    # cycle loss weights
+    parser.add_argument('--cylambda_1', default=0.25, type=float,
+                        help='Weight for inmodal cycle loss (I→I vs T→T)')
+    parser.add_argument('--cylambda_2', default=0.25, type=float,
+                        help='Weight for crossmodal cycle loss (I→T vs T→I)')
 
     args = parser.parse_args()
 

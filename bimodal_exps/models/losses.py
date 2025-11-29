@@ -388,6 +388,74 @@ class CyCLIP_Loss(nn.Module):
 
         return loss
 
+class SigLIP_CyCLIP_Loss(nn.Module):
+    
+    def __init__(self, temperature=0.01, bias=-10.0, learnable_temp=False,
+                 cylambda_1=0.25, cylambda_2=0.25, world_size=1):
+        super().__init__()
+        
+        self.world_size = world_size
+        
+        if learnable_temp:
+            self.temperature = nn.Parameter(torch.tensor(temperature))
+        else:
+            self.register_buffer('temperature', torch.tensor(temperature))
+        
+        self.register_buffer('bias', torch.tensor(bias))
+        
+        self.cylambda_1 = float(cylambda_1[0]) if isinstance(cylambda_1, tuple) else float(cylambda_1)
+        self.cylambda_2 = float(cylambda_2[0]) if isinstance(cylambda_2, tuple) else float(cylambda_2)
+    
+    def forward(self, image_features, text_features):
+        
+        # Gather from all GPUs
+        if self.world_size > 1:
+            image_features = torch.cat(GatherLayer.apply(image_features), dim=0)
+            text_features = torch.cat(GatherLayer.apply(text_features), dim=0)
+        
+        batch_size = len(image_features)
+        device = image_features.device
+        
+
+        # Compute ALL logits (before sigmoid)
+        
+        logits_I2T = (image_features @ text_features.T) / self.temperature + self.bias
+        logits_I2I = (image_features @ image_features.T) / self.temperature + self.bias
+        logits_T2T = (text_features @ text_features.T) / self.temperature + self.bias
+        
+        # SigLIP Contrastive Loss
+        
+        labels = torch.eye(batch_size, device=device) 
+        
+        loss_i2t = -torch.mean(
+            labels * F.logsigmoid(logits_I2T) + 
+            (1 - labels) * F.logsigmoid(-logits_I2T)
+        )
+        
+        loss_t2i = -torch.mean(
+            labels.T * F.logsigmoid(logits_I2T.T) + 
+            (1 - labels.T) * F.logsigmoid(-logits_I2T.T)
+        )
+        
+        siglip_loss = (loss_i2t + loss_t2i) / 2
+        
+ 
+        
+        # Apply sigmoid to get similarities in [0, 1] range
+        sim_I2T = torch.sigmoid(logits_I2T)
+        sim_I2I = torch.sigmoid(logits_I2I)
+        sim_T2T = torch.sigmoid(logits_T2T)
+        
+        # Now cycle losses operate in same space as SigLIP!
+        inmodal_cyclic_loss = (sim_I2I - sim_T2T).square().mean()
+        crossmodal_cyclic_loss = (sim_I2T - sim_I2T.t()).square().mean()
+        
+        cycle_loss = self.cylambda_1 * inmodal_cyclic_loss + self.cylambda_2 * crossmodal_cyclic_loss
+        
+        
+        total_loss = siglip_loss + cycle_loss
+        
+        return total_loss, siglip_loss.item(), cycle_loss.item()
 
 """
     VICReg
@@ -415,6 +483,11 @@ class VICReg_Loss(nn.Module):
         if self.world_size > 1:
             x = torch.cat(GatherLayer.apply(image_features), dim=0)
             y = torch.cat(GatherLayer.apply(text_features), dim=0)
+
+        else:
+            # Single GPU: use features directly
+            x = image_features
+            y = text_features
 
         batch_size = len(x)
 

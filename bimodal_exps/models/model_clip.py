@@ -4,7 +4,7 @@ import timm
 from transformers import AutoModel, RobertaModel
 
 from models.losses import CLIP_Loss, CyCLIP_Loss, SogCLR_Loss, VICReg_Loss
-from models.losses import iSogCLR_New_v2_Loss, iSogCLR_New_v1_Loss, onlineCLR_Loss, iSogCLR_New_Loss, SigLIPLoss
+from models.losses import iSogCLR_New_v2_Loss, iSogCLR_New_v1_Loss, onlineCLR_Loss, iSogCLR_New_Loss, SigLIPLoss, SigLIP_CyCLIP_Loss
 
 import torch
 from torch import nn
@@ -36,6 +36,8 @@ class CLIP(nn.Module):
                  use_temp_net = True,
                  alpha = 1.0,
                  distributed=True,
+                 cylambda_1=0.25,
+                 cylambda_2=0.25,
                  ):
         super().__init__()
 
@@ -44,6 +46,9 @@ class CLIP(nn.Module):
         self.personalized_tau = personalized_tau
 
         self.distributed = distributed
+
+        self.cylambda_1 = cylambda_1 # CyCLIP inmodal cycle weight
+        self.cylambda_2 = cylambda_2  # CyCLIP crossmodal cycle weight
 
         if self.learnable_temp:
             if not personalized_tau:
@@ -90,10 +95,10 @@ class CLIP(nn.Module):
         #     self.criterion = SogCLR_DRO_Loss(world_size=world_size, gamma=sogclr_gamma, rho_init=rho_init, tau_init=tau_init, bsz=bsz,
         #                                      eta_init=eta_init, beta_u=beta_u, enable_surrogate=enable_surrogate)
         elif self.ita_type == 'isogclr_new_v2':
-            self.criterion = iSogCLR_New_v2_Loss(world_size=world_size, gamma=sogclr_gamma, rho_init=rho_init, tau_init=tau_init, bsz=bsz,
+            self.criterion = iSogCLR_New_v2_Loss(world_size=world_size, gamma=sogclr_gamma, rho_init=6.0, tau_init=tau_init, bsz=bsz,
                                                  eta_init=eta_init, beta_u=beta_u)
         elif self.ita_type == 'isogclr_new_v1':
-            self.criterion = iSogCLR_New_v1_Loss(world_size=world_size, gamma=sogclr_gamma, rho_init=rho_init, bsz=bsz)
+            self.criterion = iSogCLR_New_v1_Loss(world_size=world_size, gamma=sogclr_gamma, rho_init=6.0, bsz=bsz)
         elif self.ita_type == 'onlineclr':
             self.criterion = onlineCLR_Loss(world_size=world_size, temperature=self.temp, gamma=sogclr_gamma)
 
@@ -102,6 +107,24 @@ class CLIP(nn.Module):
                                               use_temp_net=use_temp_net, feature_dim=embed_dim)
         elif self.ita_type == 'siglip':
             self.criterion = SigLIPLoss(temperature=self.temp, learnable_temp=self.learnable_temp, bias=-10.0)
+        # elif self.ita_type == 'cyclip_sogclr':  # ← ADD: Hybrid loss
+        #     self.criterion = CyCLIP_SogCLR_Loss(
+        #         world_size=world_size, 
+        #         gamma=sogclr_gamma, 
+        #         temperature=self.temp, 
+        #         bsz=bsz,
+        #         cylambda_1=0.1,
+        #         cylambda_2=0.1
+        #     )
+        elif self.ita_type == 'siglip_cyclip':
+            self.criterion = SigLIP_CyCLIP_Loss(
+                temperature=self.temp,
+                bias=-10.0,
+                learnable_temp=self.learnable_temp,
+                cylambda_1=self.cylambda_1,
+                cylambda_2=self.cylambda_2,
+                world_size=world_size
+            )
         else:
             raise NotImplementedError
 
@@ -223,6 +246,36 @@ class CLIP(nn.Module):
             # SigLIP also has bias parameter
             if hasattr(self.criterion, 'bias'):
                 info_dict['siglip_bias'] = self.criterion.bias
+
+        # elif self.ita_type == 'cyclip_sogclr':  # ← ADD: Hybrid loss handling
+        #     if self.distributed:
+        #         image_ids = concat_all_gather(idx)
+        #         text_ids = concat_all_gather(text_idx)
+        #     else:
+        #         image_ids, text_ids = idx, text_idx
+        #     loss_ita, sogclr_loss, cycle_loss = self.criterion(image_feat, text_feat, image_ids, text_ids, epoch)
+        #     if not self.learnable_temp:
+        #         avg_tau = torch.tensor(self.temp)
+        #     else:
+        #         avg_tau = self.temp
+        #     info_dict['avg_text_tau'] = avg_tau
+        #     info_dict['avg_image_tau'] = avg_tau
+        #     info_dict['sogclr_loss'] = sogclr_loss
+        #     info_dict['cycle_loss'] = cycle_loss
+
+        elif self.ita_type == 'siglip_cyclip':
+            loss_ita, siglip_loss, cycle_loss = self.criterion(image_feat, text_feat)
+            
+            if not self.learnable_temp:
+                avg_tau = torch.tensor(self.temp)
+            else:
+                avg_tau = self.temp
+            
+            info_dict['avg_image_tau'] = avg_tau
+            info_dict['avg_text_tau'] = avg_tau
+            info_dict['siglip_loss'] = siglip_loss
+            info_dict['cycle_loss'] = cycle_loss
+
 
         else:
             raise NotImplementedError
