@@ -649,6 +649,13 @@ if __name__ == '__main__':
     parser.add_argument('--warmup_epochs', default=5, type=int)
     parser.add_argument('--cooldown_epochs', default=0, type=int)
 
+    parser.add_argument('--opt_eps', default=None, type=float,
+                    help='Optimizer epsilon (for Adam variants). Default: None (uses optimizer default)')
+    parser.add_argument('--opt_betas', default=None, type=float, nargs=2,
+                        help='Optimizer betas (for Adam variants). Usage: --opt_betas 0.9 0.98')
+    parser.add_argument('--momentum', default=0.9, type=float,
+                        help='Momentum for SGD (default: 0.9)')
+
 
     # training & test settings
     parser.add_argument('--use_amp', action='store_true')
@@ -710,6 +717,9 @@ if __name__ == '__main__':
 
     if args.check_samples_tau:
         args.evaluate = True
+    
+    if args.opt_betas is not None:
+        args.opt_betas = tuple(args.opt_betas)
 
     args.train_file = os.path.join(args.ann_path, args.train_file)
     args.train_image_root = os.path.join(args.data_path, args.train_image_root)
