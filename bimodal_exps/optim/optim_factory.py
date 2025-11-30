@@ -3,6 +3,8 @@ Hacked together by / Copyright 2020 Ross Wightman
 """
 import torch
 from torch import optim as optim
+from lion_pytorch import Lion
+from pytorch_lamb import Lamb
 
 from .adafactor import Adafactor
 from .adahessian import Adahessian
@@ -118,6 +120,11 @@ def create_optimizer(args, model, filter_bias_and_bn=True):
     elif opt_lower == 'fusednovograd':
         opt_args.setdefault('betas', (0.95, 0.98))
         optimizer = FusedNovoGrad(parameters, **opt_args)
+    elif opt_lower == 'lion':
+        optimizer = Lion(parameters, **opt_args)
+    
+    elif opt_lower == 'lamb':
+        optimizer = Lamb(parameters, **opt_args)
     else:
         assert False and "Invalid optimizer"
         raise ValueError
