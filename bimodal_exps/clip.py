@@ -58,6 +58,9 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
     metric_logger.add_meter('lamda', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
     metric_logger.add_meter('weights_image_pos', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
     metric_logger.add_meter('weights_text_pos', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    metric_logger.add_meter('contrastive_loss', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    metric_logger.add_meter('cycle_loss', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+
 
     header = 'Train Epoch: [{}]'.format(epoch)
     print_freq = 50
@@ -87,8 +90,22 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             grad_scaler.update()
         
         metric_logger.update(loss_ita=loss_ita.item())
+        if args.ita_type == 'isogclr_cyclip':
+            metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
+            metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
+            metric_logger.update(cur_eta=info_dict['cur_eta'])
+            metric_logger.update(grad_tau_image=info_dict['grad_tau_image'])
+            metric_logger.update(grad_tau_text=info_dict['grad_tau_text'])
+            metric_logger.update(b_I=info_dict['b_I'])
+            metric_logger.update(b_T=info_dict['b_T'])
+            metric_logger.update(contrastive_loss=info_dict['contrastive_loss'])
+            metric_logger.update(cycle_loss=info_dict['cycle_loss'])
+            metric_logger.update(v=info_dict['v'])
+            metric_logger.update(lamda=info_dict['lamda'])
+            metric_logger.update(weights_image_pos=info_dict['weights_image_pos'])
+            metric_logger.update(weights_text_pos=info_dict['weights_text_pos'])
 
-        if args.ita_type in ['sogclr_dro', 'isogclr_new']:
+        elif args.ita_type in ['sogclr_dro', 'isogclr_new']:
             metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
             metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
             metric_logger.update(cur_eta=info_dict['cur_eta'])
@@ -100,6 +117,9 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             metric_logger.update(weights_text_pos=0.0)
             metric_logger.update(v=0.0)
             metric_logger.update(lamda=0.0)
+            metric_logger.update(contrastive_loss=0.0)
+            metric_logger.update(cycle_loss=0.0)
+
         elif args.ita_type == 'isogclr_new_v2':
             metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
             metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
@@ -112,6 +132,9 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             metric_logger.update(weights_text_pos=0.0)
             metric_logger.update(v=info_dict['v'])
             metric_logger.update(lamda=info_dict['lamda'])
+            metric_logger.update(contrastive_loss=0.0)
+            metric_logger.update(cycle_loss=0.0)
+
         elif args.ita_type == 'sogclr':
             metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
             metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
@@ -124,6 +147,9 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             metric_logger.update(b_T=0.0)
             metric_logger.update(v=0.0)
             metric_logger.update(lamda=info_dict['lamda'])
+            metric_logger.update(contrastive_loss=0.0)
+            metric_logger.update(cycle_loss=0.0)
+
         elif args.ita_type == 'siglip_cyclip':
             metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
             metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
@@ -136,8 +162,9 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             metric_logger.update(b_T=0.0)
             metric_logger.update(v=0.0)
             metric_logger.update(lamda=0.0)
-            metric_logger.update(siglip_loss=info_dict['siglip_loss'])
-            metric_logger.update(cycle_loss=info_dict['cycle_loss'])
+            metric_logger.update(contrastive_loss=info_dict.get('siglip_loss', 0.0))
+            metric_logger.update(cycle_loss=info_dict.get('cycle_loss', 0.0))
+
         else:
             metric_logger.update(avg_image_tau=info_dict['avg_image_tau'])
             metric_logger.update(avg_text_tau=info_dict['avg_text_tau'])
@@ -150,6 +177,8 @@ def train(model, data_loader, optimizer, tokenizer, epoch, max_epoch, warmup_ste
             metric_logger.update(b_T=0.0)
             metric_logger.update(v=0.0)
             metric_logger.update(lamda=0.0)
+            metric_logger.update(contrastive_loss=0.0)
+            metric_logger.update(cycle_loss=0.0)
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(lr_temp_net=optimizer.param_groups[2]["lr"])
@@ -677,7 +706,7 @@ if __name__ == '__main__':
 
     # loss config
     parser.add_argument('--ita_type', required=True, choices=['clip', 'cyclip', 'vicreg', 'sogclr', 'sogclr_dro', 
-                        'isogclr_new_v2', 'isogclr_new_v1', 'isogclr_new', 'onlineclr', 'siglip', 'cyclip_sogclr', 'siglip_cyclip'])
+                        'isogclr_new_v2', 'isogclr_new_v1', 'isogclr_new', 'onlineclr', 'siglip', 'cyclip_sogclr', 'siglip_cyclip', 'isogclr_cyclip'])
     parser.add_argument('--vicreg_sim_coeff', default=25.0, type=float)
     parser.add_argument('--vicreg_std_coeff', default=25.0, type=float)
     parser.add_argument('--sogclr_gamma', default=0.8, type=float)

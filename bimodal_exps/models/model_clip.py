@@ -4,7 +4,7 @@ import timm
 from transformers import AutoModel, RobertaModel
 
 from models.losses import CLIP_Loss, CyCLIP_Loss, SogCLR_Loss, VICReg_Loss
-from models.losses import iSogCLR_New_v2_Loss, iSogCLR_New_v1_Loss, onlineCLR_Loss, iSogCLR_New_Loss, SigLIPLoss, SigLIP_CyCLIP_Loss
+from models.losses import iSogCLR_New_v2_Loss, iSogCLR_New_v1_Loss, onlineCLR_Loss, iSogCLR_New_Loss, SigLIPLoss, SigLIP_CyCLIP_Loss, iSogCLR_CyCLIP_Loss
 
 import torch
 from torch import nn
@@ -121,9 +121,23 @@ class CLIP(nn.Module):
                 temperature=self.temp,
                 bias=-10.0,
                 learnable_temp=self.learnable_temp,
-                cylambda_1=self.cylambda_1,
-                cylambda_2=self.cylambda_2,
+                cylambda_1=0.5,
+                cylambda_2=0.5,
                 world_size=world_size
+            )
+
+        elif self.ita_type == 'isogclr_cyclip':
+            self.criterion = iSogCLR_CyCLIP_Loss(
+                gamma=sogclr_gamma,
+                tau_init=temp,
+                world_size=world_size,
+                bsz=bsz,
+                rho_I=rho_I,
+                rho_T=rho_T,
+                use_temp_net=use_temp_net,
+                feature_dim=embed_dim,
+                cylambda_2=0.1,  # Inmodal cycle weight
+                cylambda_3=0.1  # Crossmodal cycle weight
             )
         else:
             raise NotImplementedError
@@ -262,6 +276,36 @@ class CLIP(nn.Module):
         #     info_dict['avg_image_tau'] = avg_tau
         #     info_dict['sogclr_loss'] = sogclr_loss
         #     info_dict['cycle_loss'] = cycle_loss
+
+        if self.ita_type == 'isogclr_cyclip':
+            # iSogCLR_CyCLIP_Loss returns 8 values
+            (loss_ita, 
+             avg_image_tau, 
+             avg_text_tau, 
+             cur_eta,
+             grad_tau_image, 
+             grad_tau_text,
+             contrastive_loss,
+             cycle_loss) = self.criterion(
+                image_feat, text_feat, idx, text_idx, epoch, max_epoch
+            )
+            
+            # Populate info_dict for logging
+            info_dict['avg_image_tau'] = avg_image_tau
+            info_dict['avg_text_tau'] = avg_text_tau
+            info_dict['cur_eta'] = cur_eta
+            info_dict['grad_tau_image'] = grad_tau_image
+            info_dict['grad_tau_text'] = grad_tau_text
+            info_dict['contrastive_loss'] = contrastive_loss
+            info_dict['cycle_loss'] = cycle_loss
+            info_dict['v'] = 0.0
+            info_dict['lamda'] = 0.0
+            info_dict['weights_image_pos'] = 0.0
+            info_dict['weights_text_pos'] = 0.0
+            
+            # Also add b_I and b_T if needed for logging
+            info_dict['b_I'] = self.criterion.b_I[idx].mean().item()
+            info_dict['b_T'] = self.criterion.b_T[text_idx].mean().item()
 
         elif self.ita_type == 'siglip_cyclip':
             loss_ita, siglip_loss, cycle_loss = self.criterion(image_feat, text_feat)

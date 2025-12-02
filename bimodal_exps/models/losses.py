@@ -116,7 +116,6 @@ class SigLIPLoss(nn.Module):
         return loss
 
 
-
 class SogCLR_Loss(nn.Module):
     def __init__(self, N=2900000, gamma=0.1, temperature=0.07, world_size=8, bsz=128, enable_surrogate=False, surrogate_c=1.0,
                 lamda_rho=1.0, lamda_init=1.0):
@@ -844,5 +843,234 @@ class onlineCLR_Loss(nn.Module):
 
         return loss
 
+
+class iSogCLR_CyCLIP_Loss(nn.Module):
+    """
+    Combines iSogCLR's adaptive contrastive learning with CyCLIP's cycle consistency.
+    
+    Components:
+    1. iSogCLR: Moving averages + per-sample temperatures + DRO optimization
+    2. CyCLIP Inmodal Cycle: (I→I similarity - T→T similarity)²
+    3. CyCLIP Crossmodal Cycle: (I→T similarity - T→I similarity)²
+    
+    Args:
+        cylambda_2: Weight for inmodal cycle loss (I→I vs T→T)
+        cylambda_3: Weight for crossmodal cycle loss (I→T vs T→I)
+    """
+    
+    def __init__(self, N=2900000, gamma=0.8, tau_init=0.01, world_size=8, bsz=128, 
+                 rho_I=8.0, rho_T=8.0, use_temp_net=True, feature_dim=256,
+                 cylambda_2=0.25, cylambda_3=0.25):
+        
+        super(iSogCLR_CyCLIP_Loss, self).__init__()
+        
+        # iSogCLR Components
+        self.world_size = world_size
+        self.s_I = torch.zeros(N).cuda()
+        self.s_T = torch.zeros(N).cuda()
+        self.b_I = torch.zeros(N).cuda()
+        self.b_T = torch.zeros(N).cuda()
+        self.gamma = gamma
+        self.eps = 1e-14
+        self.bsz = bsz
+        self.mask_neg = (1.0 - torch.eye(bsz)).cuda()
+        
+        self.tau_min, self.tau_max = 0.005, 0.05
+        self.rho_I = rho_I
+        self.rho_T = rho_T
+        self.use_temp_net = use_temp_net
+        self.eta_init = 1e-5
+        
+        if self.use_temp_net:
+            self.image_temp_gen = TempGenerator(
+                feature_dim=feature_dim, M=256, 
+                tau_min=self.tau_min, tau_max=self.tau_max
+            ).cuda()
+            self.text_temp_gen = TempGenerator(
+                feature_dim=feature_dim, M=256, 
+                tau_min=self.tau_min, tau_max=self.tau_max
+            ).cuda()
+        else:
+            self.beta_u = 0.5
+            self.grad_clip = 5.0
+            self.tau_I = torch.ones(N).cuda() * tau_init
+            self.tau_T = torch.ones(N).cuda() * tau_init
+            self.u_I = torch.zeros(N).cuda()
+            self.u_T = torch.zeros(N).cuda()
+        
+        # CyCLIP Cycle Loss Weights
+        self.cylambda_2 = float(cylambda_2[0]) if isinstance(cylambda_2, tuple) else float(cylambda_2)
+        self.cylambda_3 = float(cylambda_3[0]) if isinstance(cylambda_3, tuple) else float(cylambda_3)
+    
+    def forward(self, image_features, text_features, image_ids, text_ids, epoch, max_epoch):
+        """
+        Args:
+            image_features: [batch_size, emb_dim] L2-normalized
+            text_features: [batch_size, emb_dim] L2-normalized
+            image_ids: [batch_size] indices for images
+            text_ids: [batch_size] indices for texts
+            epoch: current epoch
+            max_epoch: maximum epochs
+        
+        Returns:
+            total_loss: Combined loss
+            tau_image.mean(): Average image temperature
+            tau_text.mean(): Average text temperature
+            eta_init: Learning rate for temperatures
+            temp_weight_image.mean(): DRO weight for images
+            temp_weight_text.mean(): DRO weight for texts
+            contrastive_loss: iSogCLR contrastive loss value
+            cycle_loss: Combined cycle loss value
+        """
+        
+        # Gather from all GPUs
+        if self.world_size > 1:
+            image_features = torch.cat(GatherLayer.apply(image_features), dim=0)
+            text_features = torch.cat(GatherLayer.apply(text_features), dim=0)
+        
+        batch_size = image_features.shape[0]
+        
+        
+        # Cross-modal similarities (I↔T)
+        sim_I2T = torch.einsum('i d, j d -> i j', image_features, text_features)
+        diag_sim = torch.diagonal(sim_I2T)
+        
+        # Intra-modal similarities (I↔I, T↔T) - needed for CyCLIP cycle losses
+        sim_I2I = torch.einsum('i d, j d -> i j', image_features, image_features)
+        sim_T2T = torch.einsum('i d, j d -> i j', text_features, text_features)
+        
+        # PART 1: iSogCLR Contrastive Loss
+        
+        # Generate per-sample temperatures
+        if self.use_temp_net:
+            tau_image = self.image_temp_gen(image_features.detach())
+            tau_text = self.text_temp_gen(text_features.detach())
+        else:
+            tau_image = self.tau_I[image_ids]
+            tau_text = self.tau_T[text_ids]
+        
+        # Differences for contrastive
+        image_diffs = sim_I2T - diag_sim[:, None]
+        text_diffs = sim_I2T - diag_sim[None, :]
+        
+        # Normalize by per-sample temperatures
+        image_diffs_d_temps = (image_diffs / tau_image[:, None]).detach()
+        text_diffs_d_temps = (text_diffs / tau_text[None, :]).detach()
+        
+        # Update b values (for numerical stability)
+        old_b_I = self.b_I[image_ids]
+        new_b_I = torch.max(image_diffs_d_temps, old_b_I[:, None].tile(1, batch_size))
+        self.b_I[image_ids] = torch.max(new_b_I, dim=1)[0]
+        
+        old_b_T = self.b_T[text_ids]
+        new_b_T = torch.max(text_diffs_d_temps, old_b_T[None, :].tile(batch_size, 1))
+        self.b_T[text_ids] = torch.max(new_b_T, dim=0)[0]
+        
+        # Compute exponentials with b-shifting
+        exp_image_diffs = torch.exp(image_diffs_d_temps - self.b_I[image_ids][:, None]) * self.mask_neg
+        exp_text_diffs = torch.exp(text_diffs_d_temps - self.b_T[text_ids][None, :]) * self.mask_neg
+        
+        # Current batch statistics
+        g_I = torch.sum(exp_image_diffs, dim=1, keepdim=True)
+        g_T = torch.sum(exp_text_diffs, dim=0, keepdim=True)
+        
+        # Update moving averages
+        if epoch == 0:
+            s_I = g_I
+            s_T = g_T
+        else:
+            s_I = ((1.0 - self.gamma) * self.s_I[image_ids] * 
+                   torch.exp(old_b_I - self.b_I[image_ids]) + 
+                   self.gamma * g_I.squeeze())
+            s_T = ((1.0 - self.gamma) * self.s_T[text_ids] * 
+                   torch.exp(old_b_T - self.b_T[text_ids]) + 
+                   self.gamma * g_T.squeeze())
+            s_I = s_I.reshape(g_I.shape)
+            s_T = s_T.reshape(g_T.shape)
+        
+        self.s_I[image_ids] = s_I.squeeze()
+        self.s_T[text_ids] = s_T.squeeze()
+        
+        s_I = s_I.clamp(min=self.eps)
+        s_T = s_T.clamp(min=self.eps)
+        
+        # Importance weights
+        weights_image = exp_image_diffs / s_I
+        weights_text = exp_text_diffs / s_T
+        
+        # Contrastive loss
+        image_loss = torch.sum(weights_image * image_diffs, dim=1, keepdim=True)
+        text_loss = torch.sum(weights_text * text_diffs, dim=0, keepdim=True)
+        
+        contrastive_loss = image_loss.mean() + text_loss.mean()
+        
+        # PART 2: CyCLIP Cycle Consistency Losses
+        
+        # Use average temperature for cycle losses
+        # (Alternative: could use per-sample temps, but simpler to use average)
+        tau_avg = (tau_image.mean() + tau_text.mean()) / 2
+        
+        # Scale similarities by temperature (like CyCLIP)
+        logits_I2T = sim_I2T / tau_avg
+        logits_I2I = sim_I2I / tau_avg
+        logits_T2T = sim_T2T / tau_avg
+        
+        # Inmodal cycle: I→I similarity should match T→T similarity
+        inmodal_cyclic_loss = (logits_I2I - logits_T2T).square().mean() * (tau_avg ** 2) * batch_size
+        
+        # Crossmodal cycle: I→T should equal T→I (bidirectional consistency)
+        crossmodal_cyclic_loss = (logits_I2T - logits_I2T.t()).square().mean() * (tau_avg ** 2) * batch_size
+        
+        # Total cycle loss
+        cycle_loss = self.cylambda_2 * inmodal_cyclic_loss + self.cylambda_3 * crossmodal_cyclic_loss
+        
+        # PART 3: Temperature Optimization (DRO from iSogCLR)
+        
+        temp_weight_image = (torch.log(s_I / (batch_size - 1)) + 
+                            self.b_I[image_ids][:, None] + 
+                            self.rho_I - 
+                            torch.sum(weights_image * image_diffs_d_temps, dim=1, keepdim=True))
+        
+        temp_weight_text = (torch.log(s_T / (batch_size - 1)) + 
+                           self.b_T[text_ids][None, :] + 
+                           self.rho_T - 
+                           torch.sum(weights_text * text_diffs_d_temps, dim=0, keepdim=True))
+        
+        if self.use_temp_net:
+            temp_image_loss = torch.mean(temp_weight_image * tau_image[:, None])
+            temp_text_loss = torch.mean(temp_weight_text * tau_text[None, :])
+            temp_loss = temp_image_loss + temp_text_loss
+        else:
+            # Manual gradient updates for temperatures
+            self.u_I[image_ids] = ((1.0 - self.beta_u) * self.u_I[image_ids] + 
+                                   self.beta_u * temp_weight_image.squeeze().clamp_(
+                                       min=-self.grad_clip, max=self.grad_clip))
+            self.u_T[text_ids] = ((1.0 - self.beta_u) * self.u_T[text_ids] + 
+                                  self.beta_u * temp_weight_text.squeeze().clamp_(
+                                      min=-self.grad_clip, max=self.grad_clip))
+            
+            self.tau_I[image_ids] = (tau_image - self.eta_init * self.u_I[image_ids]).clamp_(
+                min=self.tau_min, max=self.tau_max)
+            self.tau_T[text_ids] = (tau_text - self.eta_init * self.u_T[text_ids]).clamp_(
+                min=self.tau_min, max=self.tau_max)
+            
+            temp_loss = 0.0
+        
+        # PART 4: Combined Loss
+        
+        total_loss = contrastive_loss + cycle_loss
+        
+        if self.use_temp_net:
+            total_loss += temp_loss
+        
+        # Return values for logging
+        return (total_loss, 
+                tau_image.mean().item(), 
+                tau_text.mean().item(), 
+                self.eta_init,
+                temp_weight_image.mean().item(), 
+                temp_weight_text.mean().item(),
+                contrastive_loss.item(),  # For logging
+                cycle_loss.item())         # For logging
 
 
