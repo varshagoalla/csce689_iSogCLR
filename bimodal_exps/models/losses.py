@@ -515,12 +515,48 @@ class VICReg_Loss(nn.Module):
 
 
 class TempGenerator(torch.nn.Module):
-    def __init__(self, feature_dim, M=256, tau_min=0.005, tau_max=1.0, dropout_rate=0.5):
+    def __init__(self, feature_dim, M=256, tau_min=0.005, dropout_rate=0.5, rho=6.0):
         super(TempGenerator, self).__init__()
-        pass
 
-    def forward(self, x):
-        pass
+        self.feature_dim = feature_dim
+        self.M = M
+        self.tau_min = tau_min
+        self.tau_max = 0.05
+        self.rho = rho
+
+        self.proj = nn.Linear(self.feature_dim, self.feature_dim)
+        self.scaler = nn.Parameter(torch.tensor(np.log(0.01)))
+
+        self.prototypes = nn.Parameter(torch.empty((self.M, self.feature_dim)))
+        nn.init.normal_(self.prototypes, 0.0, 1.0)
+
+        self.linear_1 = nn.Linear(self.M, 1)
+        self.linear_1.weight.data.fill_(1.0)
+        self.linear_1.bias.data.fill_(0.0)
+
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def _init_prototypes(self, feats):
+        self.prototypes.data.copy_(feats)
+
+    def forward(self, x, return_feats=False):
+
+        x = self.dropout(torch.sigmoid(self.proj(x)))
+
+        if return_feats:
+            return x
+
+        normed_protos = F.normalize(self.prototypes, p=2.0, dim=1)
+
+        prods = x @ normed_protos.t()
+
+        weights = nn.Softmax(dim=1)(prods / self.scaler.exp())
+        sims = torch.sigmoid(prods)
+
+        tau = self.linear_1((weights - 1.0/self.M) * sims).squeeze()
+
+        return (self.tau_max - self.tau_min) * torch.sigmoid(tau) + self.tau_min
+
 
 
 # try to use temperature generator in place of individualized temperatures
