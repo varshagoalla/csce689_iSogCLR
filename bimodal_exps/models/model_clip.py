@@ -277,7 +277,7 @@ class CLIP(nn.Module):
         #     info_dict['sogclr_loss'] = sogclr_loss
         #     info_dict['cycle_loss'] = cycle_loss
 
-        if self.ita_type == 'isogclr_cyclip':
+        elif self.ita_type == 'isogclr_cyclip':
             # iSogCLR_CyCLIP_Loss returns 8 values
             (loss_ita, 
              avg_image_tau, 
