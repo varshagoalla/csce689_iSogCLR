@@ -244,8 +244,8 @@ class iSogCLR_New_Loss(nn.Module):
         self.eta_init = 1e-5  
 
         if self.use_temp_net:
-            self.image_temp_gen = TempGenerator(feature_dim=feature_dim, M=256, tau_min=self.tau_min, tau_max=self.tau_max).cuda()
-            self.text_temp_gen = TempGenerator(feature_dim=feature_dim, M=256, tau_min=self.tau_min, tau_max=self.tau_max).cuda()
+            self.image_temp_gen = TempGenerator(feature_dim=feature_dim, M=256, tau_min=self.tau_min).cuda()
+            self.text_temp_gen = TempGenerator(feature_dim=feature_dim, M=256, tau_min=self.tau_min).cuda()
         else:
             self.beta_u = 0.5
             self.grad_clip = 5.0
@@ -582,8 +582,8 @@ class iSogCLR_New_v1_Loss(nn.Module):
         self.batch_size = bsz
         self.grad_clip = 5.0
         
-        self.image_temp_gen = TempGenerator(feature_dim=feature_dim, M=M, tau_min=tau_min, tau_max=tau_max).cuda()
-        self.text_temp_gen = TempGenerator(feature_dim=feature_dim, M=M, tau_min=tau_min, tau_max=tau_max).cuda()
+        self.image_temp_gen = TempGenerator(feature_dim=feature_dim, M=M, tau_min=tau_min).cuda()
+        self.text_temp_gen = TempGenerator(feature_dim=feature_dim, M=M, tau_min=tau_min).cuda()
 
         self.neg_num = bsz - 1
         self.mask_neg = (1.0 - torch.eye(bsz)).cuda()
@@ -920,11 +920,11 @@ class iSogCLR_CyCLIP_Loss(nn.Module):
         if self.use_temp_net:
             self.image_temp_gen = TempGenerator(
                 feature_dim=feature_dim, M=256, 
-                tau_min=self.tau_min, tau_max=self.tau_max
+                tau_min=self.tau_min
             ).cuda()
             self.text_temp_gen = TempGenerator(
                 feature_dim=feature_dim, M=256, 
-                tau_min=self.tau_min, tau_max=self.tau_max
+                tau_min=self.tau_min
             ).cuda()
         else:
             self.beta_u = 0.5
