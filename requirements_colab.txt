@@ -9,3 +9,5 @@ transformers==4.34.0
 webdataset==0.2.57
 accelerate==0.31.0
 libauc==1.4.0
+lion_pytorch
+lamb_pytorch
