@@ -1,3 +1,8 @@
+Got 3nd Place in the "Accelerating CLIP Training” Competition - Fall 2025 ML Course Project ([Report](https://github.com/varshagoalla/csce689_iSogCLR/blob/project/Report.pdf))
+
+<img width="2116" height="1598" alt="image" src="https://github.com/user-attachments/assets/130e7b1d-aebb-42e3-99ca-ce725a5f1d59" />
+
+
 # iSogCLR PyTorch Implementation
 
 In this repo, we show how to train a self-supervised model by using Global Contrastive Loss (GCL) on a widely used bimodal image-text dataset [CC3M](https://ai.google.com/research/ConceptualCaptions/download).
